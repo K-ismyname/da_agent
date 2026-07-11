@@ -229,11 +229,29 @@ def get_data():
     project = os.environ.get("GCP_PROJECT_ID", "")
     ds = DATASET
     q = _query
+    # funnel/channel/landing 마트는 이제 날짜 차원(cohort_date/date)을 가진다.
+    # 대시보드는 전체 스냅샷 형태(단계/채널/페이지당 1행)를 기대하므로 여기서
+    # 날짜를 걷어내 다시 집계한다 — 마트에 날짜 차원을 넣으면서도 프론트(page.tsx)를
+    # 건드리지 않기 위함. 날짜별 추세는 Data Scientist 에이전트가 query_mart로 직접 조회.
     return {
         "kpi":     q(f"SELECT * FROM `{project}.{ds}.dashboard_kpi` ORDER BY date"),
-        "funnel":  q(f"SELECT * FROM `{project}.{ds}.funnel_mart` ORDER BY step_order"),
-        "channel": q(f"SELECT * FROM `{project}.{ds}.marketing_channel_mart` ORDER BY sessions DESC"),
-        "landing": q(f"SELECT * FROM `{project}.{ds}.landing_page_mart` ORDER BY page_views DESC LIMIT 10"),
+        "funnel":  q(f"""
+            SELECT funnel_step, step_order, SUM(users) AS users,
+              ROUND(1 - SUM(users) / NULLIF(LAG(SUM(users)) OVER (ORDER BY step_order), 0), 3) AS drop_off_rate
+            FROM `{project}.{ds}.funnel_mart`
+            GROUP BY funnel_step, step_order ORDER BY step_order"""),
+        "channel": q(f"""
+            SELECT channel_group, SUM(sessions) AS sessions, SUM(users) AS users,
+              ROUND(AVG(engagement_rate), 2) AS engagement_rate
+            FROM `{project}.{ds}.marketing_channel_mart`
+            GROUP BY channel_group ORDER BY sessions DESC"""),
+        "landing": q(f"""
+            SELECT page_path, SUM(page_views) AS page_views,
+              ROUND(AVG(scroll_rate), 2) AS scroll_rate,
+              ROUND(AVG(avg_engagement_time_sec), 0) AS avg_engagement_time_sec
+            FROM `{project}.{ds}.landing_page_mart`
+            GROUP BY page_path HAVING page_views >= 3
+            ORDER BY page_views DESC LIMIT 10"""),
         "cohort":  q(f"SELECT * FROM `{project}.{ds}.cohort_mart` ORDER BY cohort_week, week_number"),
     }
 

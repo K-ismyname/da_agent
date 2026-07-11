@@ -40,9 +40,9 @@ MART_TABLES = {
 def query_mart(table_name: str) -> str:
     """Query a BigQuery Mart table. table_name must be exactly one of:
     - dashboard_kpi: 일자별 사용자/세션/PV/참여율/재방문
-    - funnel_mart: 가입 전환 퍼널 단계별 이탈률
-    - marketing_channel_mart: 유입 채널별 세션(신뢰도 LOW — UTM 미설정)
-    - landing_page_mart: 페이지별 조회수/스크롤/체류
+    - funnel_mart: 가입 전환 퍼널 단계별 이탈률 (cohort_date별 = 첫 방문일 코호트, 날짜별 추세 비교 가능)
+    - marketing_channel_mart: 유입 채널별 세션 (date별, 날짜별 추세 비교 가능; 신뢰도 LOW — UTM 미설정)
+    - landing_page_mart: 페이지별 조회수/스크롤/체류 (date별, 날짜별 추세 비교 가능)
     - journey_mart: 세션 이동 경로
     - cohort_mart: 주차별 리텐션
     - recommendation_mart: 관련 글 추천 노출/클릭률
@@ -235,12 +235,15 @@ def run_significance_test(experiment: str, start_date: str = "", end_date: str =
 
 
 # 테이블별 날짜 컬럼 — 없는 테이블은 기간 개념이 없음 (스냅샷 집계)
-# 왜 딕셔너리로 관리하나: 마트마다 날짜 컬럼명이 다르고(date vs cohort_week),
-# 아예 없는 마트도 있어서(funnel/channel/landing/journey) 하드코딩된 매핑이 필요했다.
+# 왜 딕셔너리로 관리하나: 마트마다 날짜 컬럼명이 다르고(date vs cohort_week vs
+# cohort_date), 아예 없는 마트도 있어서(journey/recommendation) 하드코딩 매핑이 필요.
 DATE_COLUMNS = {
     "dashboard_kpi": "date",
     "ab_test_mart": "date",
     "cohort_mart": "cohort_week",
+    "funnel_mart": "cohort_date",        # 첫 방문일 코호트별 퍼널
+    "marketing_channel_mart": "date",
+    "landing_page_mart": "date",
     "signup_prompt_experiment_mart": "date",
     "home_sort_experiment_mart": "date",
 }
@@ -249,9 +252,9 @@ DATE_COLUMNS = {
 @tool
 def get_date_range(table_name: str) -> str:
     """Get the date range available in a mart table.
-    Only dashboard_kpi, ab_test_mart, cohort_mart, signup_prompt_experiment_mart,
-    home_sort_experiment_mart have a date column; funnel/channel/landing/journey/
-    recommendation marts are period-less snapshots."""
+    Most marts now have a date column (dashboard_kpi, funnel_mart[cohort_date],
+    marketing_channel_mart, landing_page_mart, cohort_mart[cohort_week], ab_test_mart,
+    signup/home experiment marts); journey_mart and recommendation_mart are snapshots."""
     if table_name not in MART_TABLES:
         return f"ERROR: {table_name} is not a valid mart table."
     col = DATE_COLUMNS.get(table_name)

@@ -108,7 +108,16 @@ ORDER BY 1
 #     → /onboarding(가입 직후 전용 안내 페이지로 추정) 경로를 대신 사용.
 #     이 세 경로의 실제 의미는 서비스 담당자 확인이 필요한 추정치임.
 run("funnel_mart", f"""
-WITH user_steps AS (
+WITH user_first AS (
+  -- 코호트 기준일 = 유저가 처음 등장한 날(첫 session_start). 퍼널은 한 유저의
+  -- 여정이 여러 날에 걸치므로, 유저를 "첫 방문일" 코호트에 배정해야 날짜별
+  -- 비교(지난주 vs 이번주)가 의미를 갖는다.
+  SELECT user_pseudo_id, MIN(event_date) AS cohort_date
+  FROM {SRC}
+  WHERE event_name = 'session_start'
+  GROUP BY user_pseudo_id
+),
+user_steps AS (
   SELECT
     user_pseudo_id,
     LOGICAL_OR(event_name = 'session_start') AS step1,
@@ -128,33 +137,35 @@ WITH user_steps AS (
 ),
 cumulative AS (
   SELECT
+    f.cohort_date,
     step1 AS s1,
     step1 AND has_scroll AND has_pageview AS s2,  -- 콘텐츠 소비: page_view + scroll 둘 다
     step1 AND has_scroll AND has_pageview AND reached3_raw AS s3,
     step1 AND has_scroll AND has_pageview AND reached3_raw AND reached4_raw AS s4,
     step1 AND has_scroll AND has_pageview AND reached3_raw AND reached4_raw AND reached5_raw AS s5
-  FROM user_steps
+  FROM user_steps u
+  JOIN user_first f USING (user_pseudo_id)
 ),
 steps AS (
-  SELECT '방문' AS funnel_step, 1 AS step_order, COUNTIF(s1) AS users FROM cumulative
+  SELECT cohort_date, '방문' AS funnel_step, 1 AS step_order, COUNTIF(s1) AS users FROM cumulative GROUP BY cohort_date
   UNION ALL
-  SELECT '콘텐츠 소비', 2, COUNTIF(s2) FROM cumulative
+  SELECT cohort_date, '콘텐츠 소비', 2, COUNTIF(s2) FROM cumulative GROUP BY cohort_date
   UNION ALL
-  SELECT '가입 페이지 도달', 3, COUNTIF(s3) FROM cumulative
+  SELECT cohort_date, '가입 페이지 도달', 3, COUNTIF(s3) FROM cumulative GROUP BY cohort_date
   UNION ALL
-  SELECT '로그인/가입 시도', 4, COUNTIF(s4) FROM cumulative
+  SELECT cohort_date, '로그인/가입 시도', 4, COUNTIF(s4) FROM cumulative GROUP BY cohort_date
   UNION ALL
-  SELECT '가입 완료', 5, COUNTIF(s5) FROM cumulative
+  SELECT cohort_date, '가입 완료', 5, COUNTIF(s5) FROM cumulative GROUP BY cohort_date
 )
 SELECT
+  cohort_date,
   funnel_step,
   step_order,
   users,
-  ROUND(1 - users / NULLIF(LAG(users) OVER (ORDER BY step_order), 0), 3) AS drop_off_rate
-  -- LAG(users): 바로 이전 단계의 인원수를 가져와 "이전 단계 대비 몇 % 이탈했는지" 계산
-  -- NULLIF(...,0): 이전 단계가 0명이면 나눗셈 에러 대신 NULL 처리
+  -- LAG를 코호트별로 나눠(PARTITION BY) 계산해야 다른 날짜의 단계와 섞이지 않음
+  ROUND(1 - users / NULLIF(LAG(users) OVER (PARTITION BY cohort_date ORDER BY step_order), 0), 3) AS drop_off_rate
 FROM steps
-ORDER BY step_order
+ORDER BY cohort_date, step_order
 """)
 
 # ── 3. marketing_channel_mart ─────────────────────────────────────────
@@ -163,6 +174,7 @@ ORDER BY step_order
 run("marketing_channel_mart", f"""
 WITH session_channel AS (
   SELECT
+    event_date AS date,
     user_pseudo_id,
     (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') AS session_id,
     CASE
@@ -173,19 +185,23 @@ WITH session_channel AS (
       WHEN traffic_source.medium = 'email'                         THEN 'Email'
       ELSE 'Direct'
     END AS channel_group,
+    -- [기존 버그] WHERE event_name='session_start'로 필터돼 user_engagement가
+    -- 절대 매칭 안 됨 → is_engaged 항상 0 → engagement_rate 항상 0.0.
+    -- 날짜 차원 추가와 무관한 별개 이슈라 이번 변경에선 건드리지 않음.
     MAX(CASE WHEN event_name = 'user_engagement' THEN 1 ELSE 0 END) AS is_engaged
   FROM {SRC}
   WHERE event_name = 'session_start'
-  GROUP BY 1, 2, 3
+  GROUP BY 1, 2, 3, 4
 )
 SELECT
+  date,
   channel_group,
   COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(session_id AS STRING))) AS sessions,
   COUNT(DISTINCT user_pseudo_id)                                      AS users,
   ROUND(AVG(is_engaged), 2)                                          AS engagement_rate
 FROM session_channel
-GROUP BY 1
-ORDER BY sessions DESC
+GROUP BY 1, 2
+ORDER BY date, sessions DESC
 """)
 
 # ── 4. landing_page_mart ──────────────────────────────────────────────
@@ -194,6 +210,7 @@ ORDER BY sessions DESC
 run("landing_page_mart", f"""
 WITH page_events AS (
   SELECT
+    event_date AS date,
     REGEXP_EXTRACT(
       (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location'),
       r'https?://[^/]+(.*)'
@@ -205,6 +222,7 @@ WITH page_events AS (
   WHERE event_name IN ('page_view', 'scroll', 'user_engagement')
 )
 SELECT
+  date,
   IFNULL(page_path, '/')                              AS page_path,
   COUNTIF(event_name = 'page_view')                  AS page_views,
   ROUND(COUNTIF(event_name = 'scroll') /
@@ -213,9 +231,9 @@ SELECT
     THEN eng_ms / 1000.0 ELSE 0 END) /
     NULLIF(COUNT(DISTINCT user_pseudo_id), 0), 0)    AS avg_engagement_time_sec
 FROM page_events
-GROUP BY 1
-HAVING page_views >= 3
-ORDER BY page_views DESC
+GROUP BY 1, 2
+HAVING page_views >= 1  -- 일별 grain이라 완화(기존 전체기간 >=3 노이즈 필터는 /data 집계 단계에서 재적용)
+ORDER BY date, page_views DESC
 """)
 
 # ── 5. journey_mart ───────────────────────────────────────────────────
