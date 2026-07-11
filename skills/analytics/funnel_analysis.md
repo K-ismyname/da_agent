@@ -1,7 +1,7 @@
 # Skill: funnel_analysis
 
 ## Goal
-Analyze the community join funnel (세션 시작 → 참여 세션 → 아티클 열람 → 가입 클릭 → 가입 완료) to find the biggest drop-off step.
+Analyze the community join funnel (방문 → 콘텐츠 소비 → 가입 페이지 도달(/apply) → 로그인/가입 시도(/account) → 가입 완료(/onboarding)) to find the biggest drop-off step. funnel_mart is grained by cohort_date (user's first-visit day), so per-date funnel comparison is possible.
 
 ## Primary Owner
 Data Scientist

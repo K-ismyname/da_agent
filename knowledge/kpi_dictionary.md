@@ -46,16 +46,21 @@
 - **Owner**: Data Scientist
 
 ## Community CVR (Conversion Rate)
-- **Business Definition**: share of visitors who complete the join form (커뮤니티 가입 전환율)
-- **SQL Definition**: `form_submit users / session_start users` (unique user basis)
-- **Source Mart**: `funnel_mart` — `가입 완료` row users ÷ `세션 시작` row users
+- **Business Definition**: share of visitors who complete the join (커뮤니티 가입 전환율)
+- **SQL Definition**: `가입 완료 users / 방문 users` (unique user basis)
+- **Source Mart**: `funnel_mart` — `가입 완료` row users ÷ `방문` row users
 - **Owner**: Data Scientist
 - **Notes**: North Star Metric. A/B Test CVR(purchases/sessions)와 혼용 금지.
+  `form_submit` 이벤트 기반 아님 — `/apply`에 `<form>` 태그가 없어(소셜 로그인만)
+  page_view 경로(`/onboarding` 도달)로 가입 완료를 판정한다.
 
 ## Community Funnel Steps
-- **Definition** (5 steps): 세션 시작 → 참여 세션 → 아티클 열람 → 가입 클릭 → 가입 완료
+- **Definition** (5 steps, 2026-07-09 재설계): 방문 → 콘텐츠 소비(page_view+scroll)
+  → 가입 페이지 도달(`/apply`) → 로그인/가입 시도(`/account`) → 가입 완료(`/onboarding`)
+- **Grain**: `funnel_mart`는 `cohort_date`(유저 첫 방문일)별로 5단계를 집계 — 날짜별 퍼널 비교 가능
 - **Drop-off rate**: `1 - (step_n users / step_(n-1) users)`, `funnel_mart.drop_off_rate` 컬럼에 사전 계산됨
 - **Source Mart**: `funnel_mart`
+- **Notes**: `/account`·`/onboarding`의 의미는 실측 트래픽 기반 추정(서비스 담당 확인 필요).
 
 ## Channel Attribution
 - **Business Definition**: session source by traffic channel (Organic/Direct/Social/etc.)
