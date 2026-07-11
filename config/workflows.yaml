@@ -1,0 +1,141 @@
+name: ai-data-team-analysis
+version: 1
+
+# ── BigQuery Connection ──────────────────────────────────────────────────────
+location:
+  project: gen-lang-client-0891732976
+  dataset: formula_silk_analytics
+  region: asia-northeast3             # 서울 리전
+
+# ── SSOT Knowledge Files ─────────────────────────────────────────────────────
+knowledge:
+  - knowledge/kpi_dictionary.md
+  - knowledge/business_context.md
+  - knowledge/data_model.md
+  - knowledge/metric_definition.md
+
+# ── BigQuery Marts (READ ONLY) ───────────────────────────────────────────────
+marts:
+  - dashboard_kpi
+  - landing_page_mart
+  - marketing_channel_mart
+  - funnel_mart
+  - journey_mart
+  - cohort_mart
+  - ab_test_mart          # Meta Ads × GA4 joined via join_key (date × ab_variant)
+
+# ── Skill Categories + Agent Assignment ──────────────────────────────────────
+skill_categories:
+  Planning:
+    agent: product_analyst
+    skills:
+      - dashboard_analysis
+      - landing_page_analysis
+      - research
+
+  DataFoundation:
+    agent: analytics_engineer
+    skills:
+      - data_quality_check
+      - mart_validation
+      - metric_validation
+
+  Analytics:
+    agent: data_scientist
+    skills:
+      - marketing_channel_analysis
+      - funnel_analysis
+      - journey_analysis
+      - cohort_analysis
+      - ab_test_analysis
+
+  Validation:
+    agent: qa_reviewer
+    skills:
+      - qa_review
+      - consistency_check
+      - metric_validation    # shared skill
+      - evaluation_scoring   # Confidence / Hallucination Risk / Grounded / Verdict
+
+  Delivery:
+    agents:
+      - bi_analyst
+      - head_of_data
+    skills:
+      - dashboard_builder
+      - visualization
+      - report_writer
+      - executive_summary
+      - recommendation
+
+# ── Agent Execution Pipeline ─────────────────────────────────────────────────
+workflow:
+  # 실행 순서: 왼쪽 → 오른쪽 순차 실행
+  # skip 조건: Planner가 해당 skill을 0개 선택하면 자동 skip
+  # 항상 실행: qa_reviewer, head_of_data (skip 불가)
+  order:
+    - agent: product_analyst
+      primary_skill: dashboard_analysis
+      output: analysis_direction
+
+    - agent: analytics_engineer
+      primary_skill: data_quality_check
+      output: data_trust
+
+    - agent: data_scientist
+      primary_skill: marketing_channel_analysis   # + funnel + journey + cohort
+      output: root_cause
+
+    - agent: qa_reviewer
+      primary_skill: qa_review
+      always_run: true
+      output: qa_verdict
+
+    - agent: bi_analyst
+      primary_skill: dashboard_builder
+      output: dashboard_data
+
+    - agent: head_of_data
+      primary_skill: executive_summary
+      always_run: true
+      output: executive_brief
+
+# ── Planner Rules ─────────────────────────────────────────────────────────────
+planner:
+  # Planner selects minimum required skills based on the question
+  # QA Reviewer + Head of Data always run regardless of skill selection
+  rules:
+    - if: question mentions "channel" or "traffic source"
+      include: [marketing_channel_analysis]
+    - if: question mentions "funnel" or "conversion" or "drop"
+      include: [funnel_analysis]
+    - if: question mentions "journey" or "path" or "navigation"
+      include: [journey_analysis]
+    - if: question mentions "retention" or "cohort" or "returning"
+      include: [cohort_analysis]
+    - if: question mentions "A/B" or "ab test" or "variant" or "campaign test" or "실험"
+      include: [ab_test_analysis]
+    - if: question mentions "page" or "landing" or "scroll"
+      include: [landing_page_analysis]
+    - default: include [dashboard_analysis, data_quality_check]
+
+# ── Stop Hooks ────────────────────────────────────────────────────────────────
+hooks:
+  Stop:
+    - type: report
+      output: downloads/executive_report.md
+    - type: pdf
+      output: downloads/executive_report.pdf
+    # - type: slack                    # Slack 연동 시 활성화
+    #   channel: "#data-team"
+    #   message: "Analysis complete: {headline}"
+
+# ── System Config ─────────────────────────────────────────────────────────────
+system:
+  model: claude-sonnet-4-6
+  max_tokens: 8096
+  temperature: 0
+  language: english                    # skill/agent files in English (token efficiency)
+  output_format: structured_json
+  sql_guardrail: true                  # blocks DELETE, UPDATE, DROP
+  raw_access: false                    # blocks events_* table access

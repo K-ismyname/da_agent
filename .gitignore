@@ -1,0 +1,33 @@
+# 환경변수·인증
+.env
+.env.*
+!.env.example
+!.env.local.example
+credentials.json
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+.next/
+.cache/
+
+# 빌드 산출물
+downloads/
+*.pdf
+
+# IDE
+.DS_Store
+.vscode/
+.idea/
+
+# 로컬 데이터
+자료/
