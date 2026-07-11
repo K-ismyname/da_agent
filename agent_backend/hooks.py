@@ -152,6 +152,56 @@ def _hook_slack(result: dict) -> bool:
         return False
 
 
+def send_email(subject: str, body: str, attachment_path: str | None = None) -> bool:
+    """Gmail SMTP로 메일 발송 — 슬랙(_hook_slack)과 같은 원칙: 환경변수 미설정 시
+    조용히 스킵, 실패해도 예외를 던지지 않는다. attachment_path가 있으면 첨부.
+    필요한 환경변수: GMAIL_ADDRESS(보내는 계정), GMAIL_APP_PASSWORD(앱 비밀번호),
+    EMAIL_TO(받는 사람, 쉼표로 여러 명). 표준 라이브러리만 사용."""
+    sender = os.environ.get("GMAIL_ADDRESS")
+    password = os.environ.get("GMAIL_APP_PASSWORD")
+    to = os.environ.get("EMAIL_TO")
+    if not (sender and password and to):
+        return False  # 셋 중 하나라도 없으면 미설정 — 조용히 스킵
+    try:
+        import smtplib
+        from email.message import EmailMessage
+        msg = EmailMessage()
+        msg["From"], msg["To"], msg["Subject"] = sender, to, subject
+        msg.set_content(body)
+        if attachment_path and os.path.exists(attachment_path):
+            with open(attachment_path, "rb") as f:
+                data = f.read()
+            fname = os.path.basename(attachment_path)
+            sub = "pdf" if fname.endswith(".pdf") else "octet-stream"
+            msg.add_attachment(data, maintype="application", subtype=sub, filename=fname)
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as s:
+            s.login(sender, password)
+            s.send_message(msg)
+        return True
+    except Exception as e:
+        print(f"[email] failed: {e}")
+        return False
+
+
+def _hook_email(result: dict, pdf_path: str | None) -> bool:
+    """분석 완료 시 리포트를 메일로 발송 (슬랙 알림과 같은 이벤트). 본문은 슬랙과
+    동일한 요약, PDF가 있으면 첨부해 "제대로 된 리포트 문서"까지 전달한다."""
+    brief = result.get("head_of_data", {})
+    ev = result.get("evaluation", {})
+    subject = f"[The Formula 분석] {brief.get('headline', '분석 완료')}"[:120]
+    body = (
+        f"{brief.get('headline', '')}\n\n"
+        f"QA: {result.get('qa_reviewer', {}).get('verdict', '-')} · "
+        f"Confidence: {ev.get('confidence', '-')}% · "
+        f"Hallucination Risk: {ev.get('hallucination_risk', '-')}%\n\n"
+        "인사이트:\n"
+        + "\n".join(f"- {i.get('text', '')}" for i in brief.get("insights", []))
+        + "\n\n액션:\n"
+        + "\n".join(f"- {a}" for a in brief.get("actions", []))
+    )
+    return send_email(subject, body, pdf_path)
+
+
 def run_stop_hooks(result: dict) -> dict:
     """Event(분석 완료) → Hook 체인 실행: report.md → report.pdf → slack.
     [역할] main.py의 background.add_task(run_stop_hooks, result)로 호출되는
@@ -164,4 +214,5 @@ def run_stop_hooks(result: dict) -> dict:
     pdf_path = _hook_pdf(md_path)
     status["pdf"] = pdf_path
     status["slack"] = _hook_slack(result)
+    status["email"] = _hook_email(result, pdf_path)  # 슬랙과 동일 이벤트를 메일로도(+PDF 첨부)
     return status

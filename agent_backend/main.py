@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 from agent_backend.graph import pipeline
-from agent_backend.hooks import run_stop_hooks
+from agent_backend.hooks import run_stop_hooks, send_email
 from agent_backend.tools.bigquery import _get_client
 
 load_dotenv()  # .env / .env.local에서 GCP_PROJECT_ID, OPENAI_API_KEY 등 환경변수 로드
@@ -311,23 +311,24 @@ def _detect_anomalies(rows: list[dict], drop_pct: float, min_volume: float) -> l
     return anomalies
 
 
-def _slack_alert(text: str) -> bool:
-    """SLACK_WEBHOOK_URL이 있으면 알림 전송(없으면 조용히 스킵). hooks._hook_slack과
-    같은 방식이지만 이상 감지 전용 — 실패해도 예외를 던지지 않는다."""
+def _notify(subject: str, text: str) -> dict:
+    """이상 감지/계측 공백 알림을 슬랙과 이메일 양쪽으로 전송(각각 미설정 시 스킵).
+    분석 완료 알림(hooks._hook_slack/_hook_email)과 같은 원칙 — 실패해도 예외 없음."""
     import urllib.request
     import json as _json
+    slack_ok = False
     url = os.environ.get("SLACK_WEBHOOK_URL")
-    if not url:
-        return False
-    try:
-        req = urllib.request.Request(
-            url, data=_json.dumps({"text": text}).encode(),
-            headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=10)
-        return True
-    except Exception:
-        logger.warning("slack alert 실패", exc_info=True)
-        return False
+    if url:
+        try:
+            req = urllib.request.Request(
+                url, data=_json.dumps({"text": text}).encode(),
+                headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10)
+            slack_ok = True
+        except Exception:
+            logger.warning("slack alert 실패", exc_info=True)
+    email_ok = send_email(subject, text)  # 이상 알림은 PDF 없이 본문만
+    return {"slack": slack_ok, "email": email_ok}
 
 
 @app.get("/anomaly-check")
@@ -343,13 +344,13 @@ def anomaly_check(drop_pct: float = 0.5, min_volume: float = 10.0):
         FROM `{project}.{DATASET}.dashboard_kpi` ORDER BY date DESC LIMIT 8
     """)
     anomalies = _detect_anomalies(rows, drop_pct, min_volume)
-    alerted = False
+    alerted = {}
     if anomalies:
         lines = [f":rotating_light: *지표 급락 감지* (직전 7일 평균 대비 {int(drop_pct*100)}%↓)"]
         for a in anomalies:
             lines.append(f"- {a['metric']}: {a['baseline_avg']} → {a['latest']} ({a['drop_pct']}%↓)")
-        alerted = _slack_alert("\n".join(lines))
-    return {"checked": len(rows), "anomalies": anomalies, "slack_alerted": alerted}
+        alerted = _notify("[The Formula] 지표 급락 감지", "\n".join(lines))
+    return {"checked": len(rows), "anomalies": anomalies, "alerted": alerted}
 
 
 # 배포된 기능이 GA4에 실제로 쏘아야 하는 커스텀 이벤트 레지스트리.
@@ -392,12 +393,12 @@ def instrumentation_check(days: int = 14):
     seen = {r["event_name"]: (r["n"], r["last_seen"]) for r in rows}
     report = _check_instrumentation(seen, days)
     missing = [r for r in report if r["status"] == "MISSING"]
-    alerted = False
+    alerted = {}
     if missing:
         lines = [":warning: *계측 공백 감지* — 배포됐으나 이벤트가 안 잡히는 기능:"]
         lines += [f"- {m['feature']} (`{m['event']}`)" for m in missing]
-        alerted = _slack_alert("\n".join(lines))
-    return {"days": days, "report": report, "missing": len(missing), "slack_alerted": alerted}
+        alerted = _notify("[The Formula] 계측 공백 감지", "\n".join(lines))
+    return {"days": days, "report": report, "missing": len(missing), "alerted": alerted}
 
 
 @app.get("/insights")
