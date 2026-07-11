@@ -40,6 +40,18 @@ DATASET = "formula_silk_analytics"
 # 인스턴스로 스케일하면 안 맞음 — 그때는 Redis 등 공유 캐시로 교체.
 _ANALYZE_CACHE: dict[str, tuple[float, dict]] = {}
 ANALYZE_CACHE_TTL_SECONDS = 600
+ANALYZE_CACHE_MAX = 200  # 상시 서버라 고유 질문이 쌓이면 무한 성장 → 상한
+
+
+def _cache_put(q: str, response: dict) -> None:
+    """캐시에 넣으면서 만료 항목을 청소하고 상한을 유지한다(무한 성장 방지)."""
+    now = time.time()
+    for k in [k for k, (ts, _) in _ANALYZE_CACHE.items() if now - ts >= ANALYZE_CACHE_TTL_SECONDS]:
+        del _ANALYZE_CACHE[k]
+    if len(_ANALYZE_CACHE) >= ANALYZE_CACHE_MAX:  # 청소 후에도 넘치면 가장 오래된 것부터 제거
+        for k in sorted(_ANALYZE_CACHE, key=lambda k: _ANALYZE_CACHE[k][0])[:len(_ANALYZE_CACHE) - ANALYZE_CACHE_MAX + 1]:
+            del _ANALYZE_CACHE[k]
+    _ANALYZE_CACHE[q] = (now, response)
 
 # Next.js 프록시만 호출하도록 공유 시크릿으로 제한 — 미설정 시(로컬 개발) 검사 스킵
 # 왜 이런 인증을 뒀나(관찰기록 1432, 1436): 이 백엔드가 공개 인터넷에 노출되면
@@ -217,7 +229,7 @@ async def analyze(
         "hooks": "scheduled",
         "source": "bigquery",
     }
-    _ANALYZE_CACHE[q] = (time.time(), response)
+    _cache_put(q, response)
     return response
 
 
