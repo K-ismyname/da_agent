@@ -1,6 +1,6 @@
 # AI Data Team OS
 
-GA4로 수집한 커뮤니티 웹사이트 데이터를 8개 AI 에이전트가 자동 분석해서 인사이트를 뽑아주는 멀티 에이전트 시스템.
+GA4로 수집한 커뮤니티 웹사이트 데이터를 7개 AI 에이전트가 자동 분석해서 인사이트를 뽑아주는 멀티 에이전트 시스템.
 
 ## Architecture
 ```
@@ -61,19 +61,29 @@ Dataset: `formula_silk_analytics`
 - `credentials.json` 수정/노출 금지
 
 ## Agent Pipeline Order
-Planner → Product Analyst → Analytics Engineer → Data Scientist → QA Reviewer → Evaluator → BI Analyst → Head of Data
+Supervisor → Product Analyst → Analytics Engineer → Data Scientist → QA Reviewer → Evaluator → Head of Data
 
-1. Planner — 질문 분석, 필요한 Skill 선택
-2. Product Analyst — 분석 방향 설정
-3. Analytics Engineer — Mart 데이터 신뢰도 검증
-4. Data Scientist — 퍼널/코호트/채널/여정/A·B 테스트 분석
-5. QA Reviewer — 결과 검증 (항상 실행)
-6. Evaluator — Confidence/Hallucination Risk/Grounded 스코어링 (FAIL 시 중단)
-7. BI Analyst — 대시보드용 JSON 구조화
-8. Head of Data — Executive Brief 작성 (항상 실행)
+0. Supervisor — 질문 분류(nonanalytic/simple/complex), 라우팅 게이트
+1. Product Analyst — 분석 방향 설정 (complex 경로만)
+2. Analytics Engineer — Mart 데이터 신뢰도 검증 → trust_level (LOW 시 중단)
+3. Data Scientist — 퍼널/코호트/채널/여정/A·B 테스트 분석 (tool-calling agent)
+4. QA Reviewer — 결과 검증 (FAIL 시 중단)
+5. Evaluator — Confidence/Hallucination Risk/Grounded 스코어링, 점수는 코드가 계산 (FAIL 시 중단)
+6. Head of Data — Executive Brief 작성 (항상 실행)
+
+경로: complex = 전체 체인 / simple = Supervisor → Data Scientist → Evaluator → Head of Data / nonanalytic = 조기 종료.
+게이트 3개(trust LOW · QA FAIL · Eval FAIL)는 각각 통과 못 하면 422 반환.
+Planner·BI Analyst 노드는 제거됨(스킬 선택은 노드별 고정, 대시보드 JSON은 각 노드 결과 그대로 사용).
+
+## 추가 엔드포인트 (관측·능동 감시)
+- `/insights` : run_log 기반 최근 분석 이력
+- `/anomaly-check` : 지표 급락 감지 → 알림 (LLM 없이 SQL)
+- `/instrumentation-check` : 배포됐는데 이벤트 미수집(계측 공백) 감시
+- 매 /analyze 호출은 run_log에 기록됨
 
 ## Stop Hooks (분석 완료 시 자동 실행)
-report.md 생성 → PDF 변환(fpdf2, 한글 폰트 자동탐색) → Slack 알림(SLACK_WEBHOOK_URL 설정 시)
+report.md 생성 → PDF 변환(fpdf2, 한글 폰트 자동탐색) → Slack 알림(SLACK_WEBHOOK_URL 설정 시) → 이메일 발송(GMAIL_ADDRESS/GMAIL_APP_PASSWORD/EMAIL_TO 설정 시, PDF 첨부)
+자동화: `.github/workflows/`의 weekly-briefing(주간)·daily-checks(이상·계측 일일)가 배포된 백엔드를 cron으로 호출
 
 ## A/B Test Analysis (Meta Ads × GA4)
 - 데이터: 자료/*.csv → `agent_backend/scripts/load_ab_test_mart.py`로 BigQuery 적재

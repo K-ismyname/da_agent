@@ -8,7 +8,7 @@
 
 ## 프로젝트 소개
 
-GA4로 수집한 웹사이트 데이터를 8개 AI 에이전트가 협업해 자동 분석하는 **데이터 분석 멀티 에이전트 프로젝트**입니다.
+GA4로 수집한 웹사이트 데이터를 7개 AI 에이전트가 협업해 자동 분석하는 **데이터 분석 멀티 에이전트 프로젝트**입니다.
 
 질문 하나를 입력하면 에이전트들이 역할을 나눠 BigQuery를 직접 조회하고, QA 검증과 환각 탐지를 거친 결과만 최종 리포트로 출력합니다.
 
@@ -23,25 +23,25 @@ GA4로 수집한 웹사이트 데이터를 8개 AI 에이전트가 협업해 자
 소규모 팀에서는 이 모든 역할을 한 명이 맡아야 합니다. 이 시스템은 그 흐름 전체를 에이전트로 대체합니다.
 
 ```
-질문 한 줄 → [8 Agent Pipeline] → 검증된 Executive Brief
+질문 한 줄 → [7 Agent Pipeline] → 검증된 Executive Brief
 ```
 
-각 에이전트는 실제 데이터 팀의 역할 분담을 그대로 반영합니다. Planner가 분석 전략을 세우고, Analytics Engineer가 데이터 신뢰도를 검증하고, Data Scientist가 분석하고, QA Reviewer와 Evaluator가 이중 검증한 뒤, Head of Data가 경영진 브리핑을 작성합니다.
+각 에이전트는 실제 데이터 팀의 역할 분담을 그대로 반영합니다. Supervisor가 질문을 분류해 경로를 정하고, Analytics Engineer가 데이터 신뢰도를 검증하고, Data Scientist가 분석하고, QA Reviewer와 Evaluator가 이중 검증한 뒤, Head of Data가 경영진 브리핑을 작성합니다.
 
 ### 핵심 설계 원칙
 
 - **환각 방지**: 에이전트가 숫자를 추정하지 않습니다. 모든 수치는 BigQuery Mart에서 tool calling으로 직접 조회합니다.
-- **이중 게이트**: QA Reviewer FAIL 또는 Evaluator FAIL이면 결과를 출력하지 않고 422를 반환합니다.
+- **3중 게이트**: Analytics Engineer의 신뢰도 LOW, QA Reviewer FAIL, Evaluator FAIL 중 하나라도 걸리면 결과를 출력하지 않고 422를 반환합니다.
+- **판단은 AI, 계산·검증은 코드**: Confidence·Hallucination Risk 점수는 LLM이 아니라 Python이 계산하고, A/B 유의성 검정(z-test)도 코드가 결정론적으로 처리합니다.
 - **KPI SSOT**: 모든 지표 정의는 `knowledge/kpi_dictionary.md` 하나에서만 관리합니다. 에이전트 프롬프트가 런타임에 이 문서를 직접 읽어 주입하므로, 코드에 지표를 하드코딩할 수 없습니다.
-- **Skill 기반 분석 절차**: `skills/*.md`에 정의된 분석 단계·QA 체크리스트·anti-pattern을 Planner가 선택하고 Data Scientist 프롬프트에 그대로 주입합니다.
-- **A/B 통계 검정 자동화**: CVR 유의성 검정(two-proportion z-test)을 Python으로 결정론적으로 계산합니다. LLM이 p-value를 추정하는 것을 원천 차단합니다.
+- **Skill 기반 분석 절차**: `skills/*.md`에 정의된 분석 단계·QA 체크리스트·anti-pattern을 각 노드 프롬프트에 런타임 주입합니다.
 
 ### 분석 가능한 질문 예시
 
 ```
 이번 달 주요 지표와 이탈 원인을 분석해줘
 퍼널에서 가장 많이 이탈하는 구간이 어디야?
-A/B 테스트 결과 어느 광고 소재가 더 효과적이야?
+가입 유도 실험(A/B)에서 어느 쪽 전환율이 더 높아?
 신규 유저 코호트 리텐션이 어떻게 되고 있어?
 ```
 
@@ -54,9 +54,9 @@ Next.js (Vercel) — 프론트 + API Proxy
     ↓ GET /api/analyze?q=  (x-backend-secret 헤더 부착)
 FastAPI (Railway, 상시 실행) — agent_backend/
     ↓ LangGraph StateGraph
-8 Agent Pipeline (LangGraph)
+7 Agent Pipeline (LangGraph)
     ↓ tool calling
-BigQuery Mart (formula_silk_analytics) — 6개 VIEW + ab_test_mart TABLE
+BigQuery Mart (formula_silk_analytics) — GA4 기반 VIEW + 실험/정적 TABLE
     ↑ 쿼리 시점 즉시 재계산 (실시간)
 GA4 Export (analytics_543337410.events_*)
 ```
@@ -64,24 +64,25 @@ GA4 Export (analytics_543337410.events_*)
 ## Agent Pipeline
 
 ```
-Planner
-  ↓
+Supervisor          ← 질문 분류(nonanalytic/simple/complex) + 라우팅 게이트
+  ↓  (complex 경로)
 Product Analyst
   ↓
-Analytics Engineer  ← BigQuery 툴 사용
+Analytics Engineer  ← BigQuery 툴 사용, 신뢰도 LOW 시 422 후 종료
   ↓
-Data Scientist      ← BigQuery 툴 사용 (퍼널/코호트/A·B 분석)
+Data Scientist      ← BigQuery 툴 사용 (퍼널/코호트/채널/여정/A·B 분석)
   ↓
 QA Reviewer         ← FAIL 시 422 반환 후 종료
   ↓
-Evaluator           ← Confidence / Hallucination Risk 스코어링, FAIL 시 종료
-  ↓
-BI Analyst
+Evaluator           ← Confidence / Hallucination Risk 스코어링(코드 계산), FAIL 시 종료
   ↓
 Head of Data        ← Executive Brief (한국어)
 ```
 
-분석 완료 후 자동 실행: `report.md` → `PDF 변환` → `Slack 알림` (Stop Hooks)
+simple 경로: Supervisor → Data Scientist → Evaluator → Head of Data (중간 검증 생략)
+
+분석 완료 후 자동 실행: `report.md` → `PDF 변환` → `Slack 알림` → `이메일 발송(PDF 첨부)` (Stop Hooks, 각각 환경변수 설정 시)
+능동 감시: `/anomaly-check`(지표 급락)·`/instrumentation-check`(계측 공백)를 GitHub Actions cron이 매일 호출
 
 ## Tech Stack
 
@@ -107,9 +108,13 @@ Dataset: `formula_silk_analytics` (READ ONLY)
 | `landing_page_mart` | 페이지별 뷰·스크롤·체류 시간 | VIEW (실시간) |
 | `journey_mart` | 세션 내 페이지 이동 경로 | VIEW (실시간) |
 | `cohort_mart` | 주차별 코호트 리텐션 | VIEW (실시간) |
-| `ab_test_mart` | Meta Ads × GA4 A/B 테스트 결과 (⚠️ 스터디 실습 데이터셋 — 실제 광고 집행 데이터 아님) | TABLE (정적 CSV 적재분) |
+| `search_query_mart` | 사이트 검색어·결과 없는 검색(콘텐츠 갭) | VIEW (실시간) |
+| `recommendation_mart` | 해시태그 기반 관련 글 추천 노출·클릭 | VIEW (실시간) |
+| `signup_prompt_experiment_mart` | 가입 유도 A/B 실험 (variant × date) | VIEW (실시간) |
+| `home_sort_experiment_mart` | 홈 정렬 방식 A/B 실험 (variant × date) | VIEW (실시간) |
+| `ab_test_mart` | Meta Ads × GA4 A/B 데이터 (⚠️ 스터디 실습 데이터셋 — 실제 집행 데이터 아님) | TABLE (정적 CSV 적재분) |
 
-GA4 기반 6개 마트는 `CREATE OR REPLACE VIEW`로 정의되어 있어 쿼리 시점에 원본 `events_*` export를 즉시 재계산한다 — GA4 export가 갱신되면 별도 재실행 없이 대시보드에 바로 반영된다. `ab_test_mart`는 Meta Ads·GA4 CSV 파일을 일회성으로 적재한 정적 테이블이라 실시간 갱신 대상이 아니다 (원본 CSV 자체가 스냅샷이므로).
+GA4 기반 마트는 `CREATE OR REPLACE VIEW`로 정의되어 있어 쿼리 시점에 원본 `events_*` export를 즉시 재계산한다 — GA4 export가 갱신되면 별도 재실행 없이 대시보드에 바로 반영된다. `ab_test_mart`는 Meta Ads·GA4 CSV 파일을 일회성으로 적재한 정적 테이블이라 실시간 갱신 대상이 아니다 (원본 CSV 자체가 스냅샷이므로).
 
 커뮤니티 퍼널: `세션 시작 → 참여 세션 → 아티클 열람 → 가입 클릭 → 가입 완료`
 
@@ -188,8 +193,8 @@ da_agent/
 │   ├── main.py              # FastAPI 진입점 + BACKEND_SHARED_SECRET 미들웨어
 │   ├── graph.py             # LangGraph StateGraph
 │   ├── state.py             # AnalysisState TypedDict
-│   ├── hooks.py             # Stop Hooks (report → PDF → Slack)
-│   ├── agents/nodes.py      # 8개 에이전트 노드, knowledge/·skills/ 런타임 로드
+│   ├── hooks.py             # Stop Hooks (report → PDF → Slack → Email)
+│   ├── agents/nodes.py      # 7개 에이전트 노드, knowledge/·skills/ 런타임 로드
 │   ├── tools/bigquery.py    # BigQuery tool calling 함수
 │   ├── tests/                   # 순수 로직 단위 테스트
 │   └── scripts/
@@ -204,7 +209,7 @@ da_agent/
 
 ## Cost
 
-분석 1회당 약 **$0.27–0.29 USD** (GPT-4o · 8 LLM 호출 · ~65k tokens)
+분석 1회당 약 **$0.27–0.29 USD** (GPT-4o · complex 경로 7개 노드 · ~65k tokens)
 
 ## Rules
 

@@ -17,7 +17,8 @@ AX(AI × 실무) 실전 스터디 커뮤니티
 - Frontend: Next.js (Vercel 배포)
 - Analytics: GA4 (측정 ID: G-3T1X4Z1H28) ✅
 - Data Warehouse: BigQuery (dataset: formula_silk_analytics) ✅
-- AI Agent: Claude claude-sonnet-4-6
+- AI Agent: OpenAI GPT-4o (tool calling)
+- Agent Backend: Python FastAPI + LangGraph (Railway 상시 실행)
 
 ## 분석 목표
 GA4 데이터를 AI 에이전트 팀이 자동 분석해서
@@ -32,7 +33,7 @@ GA4 데이터를 AI 에이전트 팀이 자동 분석해서
 ## 현재 진행 상태
 - [x] GA4 속성 생성 (G-3T1X4Z1H28)
 - [x] Next.js에 GA4 코드 삽입 (PR 완료)
-- [x] Mart 테이블 생성 (formula_silk_analytics 6개)
-- [ ] GA4 → BigQuery 내보내기 연결
-- [ ] AI 에이전트 파이프라인 구축
-- [ ] 대시보드 완성
+- [x] Mart 테이블 생성 (formula_silk_analytics 11개)
+- [x] GA4 → BigQuery 내보내기 연결 (analytics_543337410.events_*)
+- [x] AI 에이전트 파이프라인 구축 (7노드 LangGraph, Railway 배포)
+- [x] 대시보드 완성 (Vercel 배포)
