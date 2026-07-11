@@ -1,0 +1,33 @@
+# 주간 데이터 브리핑 자동 발송 (da_agent)
+#
+# 매주 월요일, 배포된 백엔드의 /analyze를 한 번 호출한다. 그러면 백엔드가
+# 파이프라인을 돌리고, Stop Hook(report → PDF → Slack)이 자동 실행돼 팀 Slack에
+# "이번 주 브리핑"이 발송된다. 이 워크플로우는 방아쇠만 당기고 실제 분석·발송은
+# 이미 배포된 백엔드가 수행한다(키·의존성 재설정 불필요).
+#
+# 필요한 GitHub Secrets 2개:
+#   AGENT_BACKEND_URL     — 배포된 백엔드 URL (예: https://xxx.up.railway.app)
+#   BACKEND_SHARED_SECRET — 백엔드 미들웨어가 요구하는 공유 시크릿
+
+name: weekly-briefing
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"   # 매주 월요일 00:00 UTC = 09:00 KST
+  workflow_dispatch: {}
+
+jobs:
+  briefing:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 백엔드에 주간 브리핑 요청 (Stop Hook이 Slack 발송)
+        env:
+          AGENT_BACKEND_URL: ${{ secrets.AGENT_BACKEND_URL }}
+          BACKEND_SHARED_SECRET: ${{ secrets.BACKEND_SHARED_SECRET }}
+        run: |
+          [ -z "$AGENT_BACKEND_URL" ] && { echo "AGENT_BACKEND_URL 미설정"; exit 1; }
+          # LLM 파이프라인이 2~3분 걸리므로 타임아웃 넉넉히(300s)
+          curl -sS -m 300 -G "$AGENT_BACKEND_URL/analyze" \
+            --data-urlencode "q=이번 주 커뮤니티 주요 지표와 가입 퍼널 이탈 원인을 요약해줘" \
+            -H "x-backend-secret: $BACKEND_SHARED_SECRET" \
+            -w "\nHTTP %{http_code}\n"

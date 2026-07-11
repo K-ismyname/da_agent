@@ -1,0 +1,36 @@
+# 일일 자동 점검 (da_agent) — 이상 감지 + 계측 공백 감시
+#
+# 매일 배포된 백엔드의 /anomaly-check(지표 급락)와 /instrumentation-check(배포됐는데
+# 이벤트 미수집)를 호출한다. 각 엔드포인트가 이상을 발견하면 백엔드가 직접 Slack
+# 알림을 보낸다(주간 브리핑과 별개인 "긴급/감시" 라인). LLM 없이 SQL 점검이라 가볍다.
+#
+# 필요한 GitHub Secrets 2개(weekly-briefing과 동일):
+#   AGENT_BACKEND_URL, BACKEND_SHARED_SECRET
+
+name: daily-checks
+
+on:
+  schedule:
+    - cron: "0 23 * * *"   # 매일 23:00 UTC = 08:00 KST
+  workflow_dispatch: {}
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 지표 이상 감지
+        env:
+          AGENT_BACKEND_URL: ${{ secrets.AGENT_BACKEND_URL }}
+          BACKEND_SHARED_SECRET: ${{ secrets.BACKEND_SHARED_SECRET }}
+        run: |
+          [ -z "$AGENT_BACKEND_URL" ] && { echo "AGENT_BACKEND_URL 미설정"; exit 1; }
+          curl -sS -m 60 "$AGENT_BACKEND_URL/anomaly-check" \
+            -H "x-backend-secret: $BACKEND_SHARED_SECRET" -w "\nHTTP %{http_code}\n"
+
+      - name: 계측 공백 감시
+        env:
+          AGENT_BACKEND_URL: ${{ secrets.AGENT_BACKEND_URL }}
+          BACKEND_SHARED_SECRET: ${{ secrets.BACKEND_SHARED_SECRET }}
+        run: |
+          curl -sS -m 60 "$AGENT_BACKEND_URL/instrumentation-check" \
+            -H "x-backend-secret: $BACKEND_SHARED_SECRET" -w "\nHTTP %{http_code}\n"
