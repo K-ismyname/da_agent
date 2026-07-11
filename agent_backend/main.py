@@ -275,6 +275,49 @@ def get_ab_test():
     return {"summary": summary, "daily": daily}
 
 
+@app.get("/insights")
+def get_insights(days: int = 30):
+    """run_log(실행 관측 로그) 집계 — 시스템 자기 관측 대시보드용.
+    "어떤 질문이 자주 오나 / 어느 게이트에서 자주 막히나 / 환각 위험도 추이"를
+    LLM 없이 SQL로 집계해 반환한다. run_log가 아직 비어있으면 빈 배열들을 준다."""
+    project = os.environ.get("GCP_PROJECT_ID", "")
+    ref = f"`{project}.{DATASET}.run_log`"
+    where = f"WHERE ts >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {int(days)} DAY)"
+    try:
+        # 결과 유형(outcome) 분포 — 어느 게이트에서 자주 막히나
+        by_outcome = _query(f"""
+            SELECT outcome, COUNT(*) AS n
+            FROM {ref} {where} GROUP BY outcome ORDER BY n DESC
+        """)
+        # 경로 분포 + 평균 지연
+        by_route = _query(f"""
+            SELECT route, COUNT(*) AS n, ROUND(AVG(latency_ms)) AS avg_latency_ms
+            FROM {ref} {where} GROUP BY route ORDER BY n DESC
+        """)
+        # 환각 위험도 추이 (SUCCESS 건만, 일자별 평균)
+        risk_trend = _query(f"""
+            SELECT CAST(DATE(ts) AS STRING) AS date,
+                   ROUND(AVG(hallucination_risk), 1) AS avg_risk,
+                   ROUND(AVG(confidence), 1) AS avg_confidence,
+                   COUNT(*) AS n
+            FROM {ref} {where} AND outcome = 'SUCCESS'
+            GROUP BY date ORDER BY date
+        """)
+        # 자주 오는 질문 (상위 10)
+        top_questions = _query(f"""
+            SELECT question, COUNT(*) AS n
+            FROM {ref} {where} GROUP BY question ORDER BY n DESC LIMIT 10
+        """)
+        return {"window_days": days, "by_outcome": by_outcome,
+                "by_route": by_route, "risk_trend": risk_trend,
+                "top_questions": top_questions}
+    except Exception as e:
+        # run_log 테이블이 아직 없거나 조회 실패 — 빈 결과로 안전하게 응답
+        logger.warning("insights 조회 실패: %s", e)
+        return {"window_days": days, "by_outcome": [], "by_route": [],
+                "risk_trend": [], "top_questions": []}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}

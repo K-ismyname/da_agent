@@ -276,7 +276,10 @@ trust_level rules (be strict — you are a gate, not a rubber stamp):
 - "MEDIUM": data is usable but limited — notably a SMALL SAMPLE (e.g. only a few
   days of data, single-digit users per group). Do NOT rate small-sample data HIGH.
 - "HIGH": ample, clean, well-covered data with no material caveats.
-Put concrete problems in "issues". After querying, respond ONLY with valid JSON.""",
+For EACH concrete problem, also state what would fix it (a data/instrumentation
+action, not a re-analysis) — e.g. "UTM 파라미터를 유입 링크에 설정해야 채널 분석
+가능", "실험 기능 배포 후 며칠 트래픽이 쌓여야 표본 충분". After querying,
+respond ONLY with valid JSON.""",
         f"""Question: "{state['question']}"
 Product Analyst direction: {json.dumps(state['product_analyst'], ensure_ascii=False)}
 
@@ -284,7 +287,7 @@ Use query_mart and get_date_range tools as needed, then return:
 {{
   "trust_level": "HIGH|MEDIUM|LOW",
   "tables_queried": ["테이블명"],
-  "issues": ["구체적 문제 (표본 크기·결측·이상치 등)"],
+  "issues": [{{"problem": "구체적 문제 (표본 크기·결측·이상치 등)", "fix": "이를 해결할 데이터/계측 조치"}}],
   "confidence": 0-100,
   "activity": "analytics_engineer: 데이터 검증 완료"
 }}""",
