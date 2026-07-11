@@ -6,7 +6,7 @@ import { NextResponse } from 'next/server'
 import { backendFetch } from '@/lib/backend'
 
 // LLM 파이프라인이 2~3분 걸리므로 Vercel 함수 제한을 늘린다 (Pro 플랜 필요)
-// 기본 제한(무료 플랜 10초 등)보다 훨씬 길게 설정 — 8개 에이전트를 순차로
+// 기본 제한(무료 플랜 10초 등)보다 훨씬 길게 설정 — 7개 에이전트를 순차로
 // LLM 호출하는 특성상 짧은 타임아웃이면 항상 실패한다.
 export const maxDuration = 300
 

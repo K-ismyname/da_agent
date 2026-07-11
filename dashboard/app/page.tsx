@@ -20,13 +20,14 @@ type Data = {
 
 const DEFAULT_QUESTION = '이번 달 웹사이트 주요 지표와 이탈 원인을 분석해줘'
 
-// 실제 광고 집행이 없으므로 A/B 테스트 질문은 제외 (해당 기능은 /ab-test 페이지에서
-// 스터디 실습 데이터셋으로만 별도 제공)
+// A/B 실험 질문은 여기서 제외 — 전용 /ab-test 페이지에서 가입 유도 배너 실험을 별도 제공.
+// "어느 채널?" 류는 제외: UTM 미설정으로 Data Scientist가 항상 answerable=false 처리하므로
+// (채널 데이터 신뢰도 LOW) 예시로 넣으면 반드시 "답할 수 없음"이 나온다.
 const EXAMPLE_QUESTIONS = [
   '이번 달 웹사이트 주요 지표와 이탈 원인을 분석해줘',
   '퍼널에서 가장 많이 이탈하는 구간이 어디야?',
   '재방문율이 어떻게 되고 있어?',
-  '어느 채널에서 유입이 많아?',
+  '사용자들이 주로 어떤 경로로 사이트를 이동해?',
   '어느 페이지 체류시간이 가장 길어?',
 ]
 
@@ -66,8 +67,8 @@ export default function Dashboard() {
 
   const loading = briefLoading && dataLoading
 
-  // 퍼널 집계 — funnel_mart 단계명 기준
-  const funnelStart = data?.funnel.find(f => f.funnel_step === '세션 시작')?.users ?? 0
+  // 퍼널 집계 — funnel_mart 단계명 기준 (2026-07-09 재설계: 방문→콘텐츠 소비→…→가입 완료)
+  const funnelStart = data?.funnel.find(f => f.funnel_step === '방문')?.users ?? 0
   const funnelDone  = data?.funnel.find(f => f.funnel_step === '가입 완료')?.users ?? 0
   const convRate = funnelStart ? ((funnelDone / funnelStart) * 100).toFixed(1) : '0'
 
@@ -110,7 +111,7 @@ export default function Dashboard() {
         <div className="mb-8">
           <div className="text-xs text-slate-500 uppercase tracking-widest font-bold mb-3">Agent Pipeline</div>
           <div className="flex items-center gap-1 overflow-x-auto pb-1">
-            {['Planner', 'Product Analyst', 'Analytics Engineer', 'Data Scientist', 'QA Reviewer', 'BI Analyst', 'Head of Data'].map((agent, i) => (
+            {['Supervisor', 'Product Analyst', 'Analytics Engineer', 'Data Scientist', 'QA Reviewer', 'Evaluator', 'Head of Data'].map((agent, i) => (
               <div key={agent} className="flex items-center shrink-0">
                 <div className={`border rounded-lg px-3 py-2 text-xs ${i === 6 ? 'border-[#7c6af740] bg-[#7c6af708]' : 'border-[#1e1e2e] bg-[#13131a]'}`}>
                   <div className={`font-semibold ${i === 6 ? 'text-[#7c6af7]' : 'text-slate-300'}`}>{agent}</div>
@@ -128,7 +129,7 @@ export default function Dashboard() {
         <div className="grid grid-cols-4 gap-4 mb-6">
           {[
             { label: '총 방문자', value: dataLoading ? '-' : totalUsers.toLocaleString(), sub: '전체 기간 합산' },
-            { label: '가입 전환율', value: dataLoading ? '-' : `${convRate}%`, sub: '세션 시작 → 가입 완료' },
+            { label: '가입 전환율', value: dataLoading ? '-' : `${convRate}%`, sub: '방문 → 가입 완료' },
             { label: '평균 체류시간', value: dataLoading ? '-' : `${Math.floor(avgEngagement / 60)}m ${Math.round(avgEngagement % 60)}s`, sub: '참여 세션 기준' },
             { label: '참여율', value: dataLoading ? '-' : `${(avgEngRate * 100).toFixed(1)}%`, sub: '참여 세션 / 전체 세션' },
           ].map(card => (
@@ -185,7 +186,7 @@ export default function Dashboard() {
           <div className="text-xs text-slate-500 mb-4">Q. {askedQuestion}</div>
 
           {briefLoading ? (
-            <div className="text-slate-400 animate-pulse">AI 에이전트 분석 중... (8개 에이전트 순차 실행, 최대 3분)</div>
+            <div className="text-slate-400 animate-pulse">AI 에이전트 분석 중... (7개 에이전트 순차 실행, 최대 3분)</div>
           ) : briefError ? (
             <div className="text-red-400 text-sm">분석 실패 또는 검증 미통과 (QA/Evaluator FAIL). 다른 질문으로 다시 시도해보세요.</div>
           ) : brief ? (
