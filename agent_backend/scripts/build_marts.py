@@ -329,4 +329,60 @@ GROUP BY article_id
 ORDER BY shown DESC
 """)
 
+# ── 8. search_query_mart (콘텐츠 갭 신호) ──────────────────────────────
+# 사용자가 사이트 내에서 검색한 키워드와 "검색 후 아티클을 클릭했는지"를 집계.
+# no_click_rate가 높은 검색어 = 찾았지만 만족스러운 결과가 없던 주제 = 콘텐츠 갭
+# → 커뮤니티 운영자가 "무슨 글을 더 써야 하는지" 판단하는 근거.
+# 한글 검색어는 URL 인코딩(%EB..)돼 있어 그대로면 못 읽으므로, JS UDF로 디코딩한다.
+client.query(f"""
+CREATE OR REPLACE FUNCTION `{DEST}.url_decode`(s STRING)
+RETURNS STRING
+LANGUAGE js AS r'''
+  try {{ return decodeURIComponent(s.replace(/\\+/g, ' ')); }} catch (e) {{ return s; }}
+'''
+""").result()
+print("url_decode UDF 생성")
+
+run("search_query_mart", f"""
+WITH pv AS (
+  SELECT
+    user_pseudo_id,
+    (SELECT value.int_value FROM UNNEST(event_params) WHERE key='ga_session_id') AS session_id,
+    event_timestamp,
+    (SELECT value.string_value FROM UNNEST(event_params) WHERE key='page_location') AS loc
+  FROM {SRC}
+  WHERE event_name = 'page_view'
+),
+searches AS (
+  SELECT user_pseudo_id, session_id, event_timestamp,
+    REGEXP_EXTRACT(loc, r'[?&]q=([^&]+)') AS q_raw
+  FROM pv
+  WHERE REGEXP_CONTAINS(loc, r'/search') AND REGEXP_CONTAINS(loc, r'[?&]q=')
+),
+articles AS (
+  SELECT user_pseudo_id, session_id, event_timestamp
+  FROM pv WHERE REGEXP_CONTAINS(loc, r'/article/')
+),
+-- 각 검색 이벤트가 "같은 세션에서 그 이후에 아티클 조회로 이어졌는지"
+enriched AS (
+  SELECT s.q_raw,
+    CONCAT(s.user_pseudo_id, CAST(s.session_id AS STRING)) AS sess,
+    EXISTS(
+      SELECT 1 FROM articles a
+      WHERE a.user_pseudo_id = s.user_pseudo_id AND a.session_id = s.session_id
+        AND a.event_timestamp > s.event_timestamp
+    ) AS clicked_article
+  FROM searches s
+)
+SELECT
+  `{DEST}.url_decode`(q_raw) AS query,
+  COUNT(*) AS search_count,
+  COUNT(DISTINCT sess) AS search_sessions,
+  COUNTIF(clicked_article) AS led_to_article,
+  ROUND(SAFE_DIVIDE(COUNTIF(NOT clicked_article), COUNT(*)), 2) AS no_click_rate
+FROM enriched
+GROUP BY query
+ORDER BY search_count DESC, no_click_rate DESC
+""")
+
 print("\n완료.")

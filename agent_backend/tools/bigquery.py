@@ -33,16 +33,22 @@ MART_TABLES = {
     "dashboard_kpi", "funnel_mart", "marketing_channel_mart",
     "landing_page_mart", "journey_mart", "cohort_mart", "ab_test_mart",
     "recommendation_mart", "signup_prompt_experiment_mart",
-    "home_sort_experiment_mart"
+    "home_sort_experiment_mart", "search_query_mart"
 }
 
 @tool
 def query_mart(table_name: str) -> str:
-    """Query a BigQuery Mart table. table_name must be one of:
-    dashboard_kpi, funnel_mart, marketing_channel_mart,
-    landing_page_mart, journey_mart, cohort_mart, ab_test_mart,
-    recommendation_mart, signup_prompt_experiment_mart,
-    home_sort_experiment_mart"""
+    """Query a BigQuery Mart table. table_name must be exactly one of:
+    - dashboard_kpi: 일자별 사용자/세션/PV/참여율/재방문
+    - funnel_mart: 가입 전환 퍼널 단계별 이탈률
+    - marketing_channel_mart: 유입 채널별 세션(신뢰도 LOW — UTM 미설정)
+    - landing_page_mart: 페이지별 조회수/스크롤/체류
+    - journey_mart: 세션 이동 경로
+    - cohort_mart: 주차별 리텐션
+    - recommendation_mart: 관련 글 추천 노출/클릭률
+    - search_query_mart: 사이트 내 검색어와 콘텐츠 갭 (no_click_rate 높을수록 갭)
+    - signup_prompt_experiment_mart / home_sort_experiment_mart: A/B 실험 원자료
+    - ab_test_mart: ⚠️ 무관한 Meta Ads 데모 (사용 금지)"""
     # 독스트링이 곧 LLM에게 주는 도구 사용 설명서 — 여기 적힌 그대로 LLM이 읽고 판단한다.
     if table_name not in MART_TABLES:
         return f"ERROR: {table_name} is not a valid mart table."  # 화이트리스트 방어: 잘못된 테이블명은 쿼리 없이 즉시 에러 반환

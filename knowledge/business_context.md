@@ -42,6 +42,7 @@
 | 페이지별 성과·인기 페이지 | landing_page_mart |
 | 사용자 이동 경로 | journey_mart |
 | 관련 글 추천 클릭률 | recommendation_mart |
+| **검색어·콘텐츠 갭** (뭘 찾는데 결과가 없나) | **search_query_mart** (no_click_rate 높을수록 콘텐츠 갭) |
 | A/B 실험 (가입 배너/홈 정렬) | signup_prompt / home_sort 실험 마트 (Data Scientist A/B 분기) |
 
 ## 진행 중 A/B 실험 (목업 데이터 — 실기능 배포 후 실데이터로 교체)
