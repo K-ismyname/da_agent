@@ -173,6 +173,7 @@ ORDER BY cohort_date, step_order
 # GA4의 raw traffic_source.medium 값을 사람이 이해하는 채널 그룹으로 매핑(CASE WHEN)하는 게 핵심.
 run("marketing_channel_mart", f"""
 WITH session_channel AS (
+  -- 세션의 채널 귀속: session_start 이벤트의 traffic_source.medium에서만 얻는다.
   SELECT
     event_date AS date,
     user_pseudo_id,
@@ -184,22 +185,35 @@ WITH session_channel AS (
       WHEN traffic_source.medium = 'referral'                      THEN 'Referral'
       WHEN traffic_source.medium = 'email'                         THEN 'Email'
       ELSE 'Direct'
-    END AS channel_group,
-    -- [기존 버그] WHERE event_name='session_start'로 필터돼 user_engagement가
-    -- 절대 매칭 안 됨 → is_engaged 항상 0 → engagement_rate 항상 0.0.
-    -- 날짜 차원 추가와 무관한 별개 이슈라 이번 변경에선 건드리지 않음.
-    MAX(CASE WHEN event_name = 'user_engagement' THEN 1 ELSE 0 END) AS is_engaged
+    END AS channel_group
   FROM {SRC}
   WHERE event_name = 'session_start'
   GROUP BY 1, 2, 3, 4
+),
+session_engaged AS (
+  -- 참여 신호는 user_engagement 이벤트에 있으므로 session_start로 필터하지 않고
+  -- 전체 이벤트에서 세션별로 집계한다 — dashboard_kpi의 참여율 정의(SSOT)와 동일:
+  -- "참여 세션 = user_engagement 이벤트가 있는 세션".
+  SELECT
+    user_pseudo_id,
+    (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') AS session_id,
+    MAX(CASE WHEN event_name = 'user_engagement' THEN 1 ELSE 0 END) AS is_engaged
+  FROM {SRC}
+  GROUP BY 1, 2
 )
 SELECT
-  date,
-  channel_group,
-  COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(session_id AS STRING))) AS sessions,
-  COUNT(DISTINCT user_pseudo_id)                                      AS users,
-  ROUND(AVG(is_engaged), 2)                                          AS engagement_rate
-FROM session_channel
+  c.date,
+  c.channel_group,
+  COUNT(DISTINCT CONCAT(c.user_pseudo_id, CAST(c.session_id AS STRING))) AS sessions,
+  COUNT(DISTINCT c.user_pseudo_id)                                        AS users,
+  -- engagement_rate = 참여 세션 / 전체 세션 (distinct 세션 기준, dashboard_kpi와 동일 산식)
+  ROUND(
+    COUNT(DISTINCT CASE WHEN e.is_engaged = 1
+      THEN CONCAT(c.user_pseudo_id, CAST(c.session_id AS STRING)) END) /
+    NULLIF(COUNT(DISTINCT CONCAT(c.user_pseudo_id, CAST(c.session_id AS STRING))), 0), 2
+  ) AS engagement_rate
+FROM session_channel c
+LEFT JOIN session_engaged e USING (user_pseudo_id, session_id)
 GROUP BY 1, 2
 ORDER BY date, sessions DESC
 """)
