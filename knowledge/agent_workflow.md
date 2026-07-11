@@ -1,188 +1,125 @@
 # Agent Workflow
 
 ## Overview
-Sequential multi-agent pipeline that analyzes community website GA4 data and produces an executive brief.
+Supervisor가 질문을 3경로로 분류하는 멀티 에이전트 파이프라인. 커뮤니티 웹사이트
+GA4 데이터를 분석해 검증된 Executive Brief를 만든다.
 
-**Trigger:** `GET /api/analyze?q=질문`
-**Total LLM calls:** 7
-**Model:** GPT-4o
+**Trigger:** `GET /analyze?q=질문` (Next.js `/api/analyze` 프록시 경유)
+**Model:** GPT-4o (temperature=0)
+**노드:** 7개 (Planner·BI Analyst는 제거됨)
+**게이트:** 3개 — 하나라도 걸리면 422 반환 (trust LOW · QA FAIL · Eval FAIL)
+
+> SSOT는 코드다: 흐름은 `agent_backend/graph.py`, 노드 로직은 `agents/nodes.py`.
+> 이 문서는 그 구조의 설명이며, 불일치 시 코드가 이긴다.
 
 ---
 
-## Pipeline
+## Pipeline (3 routes)
 
 ```
 User Question
-     │
      ▼
-[1] Planner
-     │ agents[], skills[], reason
+[0] Supervisor  ── route 분류 ──┬─ nonanalytic → 안내 메시지만 반환 (에이전트 미실행)
+                                ├─ simple  → [3] Data Scientist → [5] Evaluator → [6] Head of Data
+                                └─ complex → 전체 체인 ↓
+[1] Product Analyst
      ▼
-[2] Product Analyst
-     │ hypothesis, focus_metrics, analysis_direction
+[2] Analytics Engineer ──[trust_level == LOW? → 422 STOP]
      ▼
-[3] Analytics Engineer          ← BigQuery Mart 데이터 병행 투입
-     │ trust_level, issues, confidence
+[3] Data Scientist  (A/B 질문이면 실험 전용 분기)
      ▼
-[4] Data Scientist
-     │ root_cause, funnel_insight, channel_insight, cohort_insight, evidence[]
+[4] QA Reviewer ───────[verdict == FAIL? → 422 STOP]
      ▼
-[5] QA Reviewer  (always runs)
-     │ verdict: PASS|WARN|FAIL
-     │
-     ├── FAIL → 즉시 중단, 422 반환
-     │
-     └── PASS/WARN
-          ▼
-         [6] BI Analyst
-              │ kpi_summary, chart_data
-              ▼
-         [7] Head of Data  (always runs)
-              │ headline, insights[3], actions[3], confidence, qa_verdict
-              ▼
-           API JSON Response
+[5] Evaluator ─────────[verdict == FAIL? → 422 STOP]   (점수는 코드가 계산)
+     ▼
+[6] Head of Data  →  API JSON Response
 ```
 
----
-
-## Agent Definitions
-
-### 1. Planner
-- **File:** `../agents/` (implicit)
-- **Input:** user question (string)
-- **Output:** `{ agents[], skills[], reason }`
-- **Role:** Selects minimum required agents and skills based on the question
-- **Rules:**
-  - QA Reviewer and Head of Data always included regardless of selection
-  - Must justify selection with `reason`
+- **simple 경로**는 Product Analyst·Analytics Engineer·QA Reviewer를 건너뛴다
+  (단일 사실 조회엔 사전 방향 설정·다중 결과 대조가 불필요).
+- **tool-calling 에이전트**(BigQuery를 스스로 반복 조회)는 Analytics Engineer·
+  Data Scientist·Evaluator 3개. 나머지는 단발 LLM 호출.
 
 ---
 
-### 2. Product Analyst
-- **File:** `../agents/product_analyst.md`
-- **Input:** question + Planner output
-- **Output:** `{ headline, focus_metrics[], hypothesis, analysis_direction, activity }`
-- **Role:** Sets analysis direction and hypothesis before data is touched
-- **Rules:**
-  - North Star Metric = 가입 전환율
-  - Funnel: 방문 → 아티클 열람 → 가입 클릭 → 가입 완료
+## Node Definitions
+
+### 0. Supervisor
+- **Output:** `{ route: nonanalytic|simple|complex, reason, message }`
+- **Role:** 경로 분기 게이트. "이탈률" 같이 여러 마트로 해석 가능한 지표는 complex로.
+- **Gate:** nonanalytic이면 에이전트 미실행, 안내 message만 반환.
+
+### 1. Product Analyst (complex only)
+- **Output:** `{ headline, focus_metrics[], hypothesis, analysis_direction }`
+- **Role:** 데이터 조회 전, business_context 기반으로 분석 방향·가설 설정.
+
+### 2. Analytics Engineer (tool-calling)
+- **Tools:** `query_mart`, `get_date_range`
+- **Output:** `{ trust_level: HIGH|MEDIUM|LOW, tables_queried[], issues[{problem,fix}], confidence }`
+- **Role:** 데이터 신뢰도 게이트키퍼. 표본 크기·결측·이상치 점검.
+- **Gate:** `trust_level == LOW` → 파이프라인 중단(422).
+
+### 3. Data Scientist (tool-calling)
+- **Tools(일반):** `query_mart`, `get_date_range`
+- **Tools(A/B):** + `get_experiment_summary`, `run_significance_test`
+- **Skills:** 일반 분기는 `GENERAL_ANALYSIS_SKILLS`(funnel/cohort/journey/channel) 자동 주입,
+  A/B 분기는 `ab_test_analysis` + `ab_test_framework.md` 주입.
+- **Output(일반):** `{ answerable, root_cause, insights{...}, evidence[] }`
+- **Output(A/B):** `{ experiment_match, experiment, primary_metrics[], significance, guardrail_metrics[], recommended_variant, ... }`
+- **Role:** 실제 인사이트 생성. answerable=false면 "물어본 데이터가 없다"고 명시.
+
+### 4. QA Reviewer (complex only)
+- **Output:** `{ verdict: PASS|WARN|FAIL, issues[], confidence }`
+- **Role:** 도구 없이, 앞 결과들의 논리적 일관성만 검증(숫자 재조회는 Evaluator 몫).
+- **Gate:** `verdict == FAIL` → 중단(422).
+
+### 5. Evaluator (tool-calling judge + 코드 집계)
+- **Tools:** `query_mart`, `get_experiment_summary`, `run_significance_test`, `get_date_range`
+- **Output:** `{ confidence, hallucination_risk, grounded_numeric, grounded_llm, verdict, checks{} }`
+- **Role:** LLM이 개별 주장을 PASS/PARTIAL/FAIL 판정 → **점수는 Python이 결정론적으로 계산**.
+- **Gate:** `verdict == FAIL` → 중단(422).
+
+### 6. Head of Data
+- **Output:** `{ headline, insights[≤3], actions[≤3] }` + confidence/qa_verdict는 코드가 덮어씀
+- **Role:** 최종 Executive Brief(한국어). confidence·qa_verdict는 LLM 환각 방지를 위해
+  Evaluator/QA의 실제 값으로 교체.
 
 ---
 
-### 3. Analytics Engineer
-- **File:** `../agents/analytics_engineer.md`
-- **Input:** BigQuery Mart data (all 6 tables)
-- **Output:** `{ trust_level: HIGH|MEDIUM|LOW, issues[], confidence, activity }`
-- **Role:** Validates data quality before analysis begins
-- **Rules:**
-  - If trust_level = LOW → Data Scientist must flag low confidence
-  - Never queries Raw events_* tables
-
----
-
-### 4. Data Scientist
-- **File:** `../agents/data_scientist.md`
-- **Skills used:** `funnel_analysis`, `cohort_analysis`, `marketing_channel_analysis`, `journey_analysis`
-- **Input:** Mart data + Product Analyst direction
-- **Output:** `{ root_cause, funnel_insight, channel_insight, cohort_insight, evidence[], activity }`
-- **Role:** Finds root cause through multi-dimensional analysis
-- **Rules:**
-  - Evidence must reference specific numbers from data
-  - No SQL writing — Mart queries only
-
----
-
-### 5. QA Reviewer *(always runs)*
-- **File:** `../agents/qa_reviewer.md`
-- **Input:** Product Analyst + Analytics Engineer + Data Scientist outputs
-- **Output:** `{ verdict: PASS|WARN|FAIL, issues[], confidence, activity }`
-- **Role:** Cross-validates consistency across all agent outputs
-- **Rules:**
-  - FAIL → pipeline stops, 422 returned
-  - WARN → pipeline continues with disclaimer
-  - Cannot be skipped
-
----
-
-### 6. BI Analyst
-- **File:** `../agents/bi_analyst.md`
-- **Input:** Mart data + QA Reviewer output
-- **Output:** `{ kpi_summary, chart_data, activity }`
-- **Role:** Structures validated data into dashboard-ready JSON
-- **Rules:**
-  - Only uses QA-validated numbers
-  - Does not modify or reinterpret analysis results
-
----
-
-### 7. Head of Data *(always runs)*
-- **File:** `../agents/head_of_data.md`
-- **Input:** All 6 agent outputs combined
-- **Output:** `{ headline, insights[max 3], actions[max 3], confidence, qa_verdict, activity }`
-- **Role:** Final executive brief — synthesis and decision
-- **Rules:**
-  - Max 3 insights, max 3 actions
-  - Cannot override QA FAIL verdict
-  - confidence < 40% → recommend re-run
-
----
-
-## Data Flow
-
-```
-BigQuery Mart (formula_silk_analytics)
-  dashboard_kpi
-  funnel_mart
-  marketing_channel_mart        ──► Analytics Engineer (Step 3)
-  landing_page_mart                      │
-  journey_mart                           │ (validated data)
-  cohort_mart                            ▼
-                                   Data Scientist (Step 4)
-```
-
----
-
-## Response Structure
+## Response Structure (SUCCESS)
 
 ```json
 {
   "question": "사용자 질문",
-  "source": "dummy | bigquery",
-  "data": { "kpi": [], "funnel": [], "channel": [], "landing": [], "cohort": [] },
+  "route": "complex",
+  "source": "bigquery",
   "pipeline": {
-    "planner": {},
-    "productAnalyst": {},
-    "analyticsEngineer": {},
-    "dataScientist": {},
-    "qaReviewer": {},
-    "biAnalyst": {}
+    "productAnalyst": {}, "analyticsEngineer": {},
+    "dataScientist": {}, "qaReviewer": {}, "evaluation": {}
   },
-  "brief": {
-    "headline": "...",
-    "insights": [],
-    "actions": [],
-    "confidence": 82,
-    "qa_verdict": "PASS"
-  }
+  "brief": { "headline": "...", "insights": [], "actions": [], "confidence": 82, "qa_verdict": "PASS" },
+  "hooks": "scheduled"
 }
 ```
+게이트에서 막히면 대신 422 + `{ error: "DATA_TRUST_LOW"|"QA_FAIL"|"EVAL_FAIL", ... }`.
+nonanalytic이면 200 + `{ route: "nonanalytic", message }`.
 
 ---
 
-## Skip Logic
+## Skip Logic (경로별)
 
-| Agent | Skippable? | Condition |
-|-------|-----------|-----------|
-| Planner | No | Always runs |
-| Product Analyst | No | Always runs |
-| Analytics Engineer | No | Always runs |
-| Data Scientist | Yes | If Planner excludes it |
-| QA Reviewer | **No** | Always runs |
-| BI Analyst | Yes | If Planner excludes it |
-| Head of Data | **No** | Always runs |
+| Node | complex | simple | nonanalytic |
+|------|:---:|:---:|:---:|
+| Supervisor | ✓ | ✓ | ✓ |
+| Product Analyst | ✓ | — | — |
+| Analytics Engineer | ✓ | — | — |
+| Data Scientist | ✓ | ✓ | — |
+| QA Reviewer | ✓ | — | — |
+| Evaluator | ✓ | ✓ | — |
+| Head of Data | ✓ | ✓ | — |
 
 ---
 
 ## Cost Reference
-~7 LLM calls per full run (GPT-4o)
-Estimated: $0.10–0.15 USD per analysis
+complex 1회 ~$0.27–0.29 USD (GPT-4o, tool-calling 포함 ~65k tokens).
+분석 완료 후 Stop Hook: report.md → PDF → Slack → Email (각각 환경변수 설정 시).

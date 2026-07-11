@@ -1,7 +1,7 @@
 # LangGraph StateGraph 정의 — 에이전트 파이프라인 흐름
 #
 # [역할]
-# agents/nodes.py의 8개 함수를 실제 그래프 노드로 등록하고, 노드 간 실행
+# agents/nodes.py의 7개 노드 함수를 실제 그래프 노드로 등록하고, 노드 간 실행
 # 순서(엣지)를 정의한다. 이 파일이 로드되면 즉시 컴파일된 pipeline 객체가
 # 모듈 레벨에 생성되고(맨 아래), main.py가 이걸 그대로 import해서 쓴다.
 #

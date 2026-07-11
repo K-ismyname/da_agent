@@ -11,7 +11,7 @@
 #   프론트는 Next.js의 SSR/라우팅 이점을 그대로 쓰기 위함. 두 서버를 HTTP로
 #   통신시켜 배포도 독립적으로(Vercel + 별도 Python 서버) 가져갈 수 있다.
 # - /analyze(LLM 파이프라인 경유)와 /data, /ab-test(BigQuery 직접 조회) API를
-#   분리한 이유: 대시보드에 차트를 그릴 땐 굳이 8개 에이전트를 다 거쳐 LLM
+#   분리한 이유: 대시보드에 차트를 그릴 땐 굳이 7개 에이전트를 다 거쳐 LLM
 #   비용을 쓸 필요가 없다. "AI 분석이 필요한 질문"과 "이미 정해진 차트 데이터
 #   조회"를 분리해 불필요한 LLM 호출을 없앴다(관찰기록 1328 "data API 분리").
 import logging
@@ -163,7 +163,7 @@ async def analyze(
         "latency_ms": int((time.time() - t0) * 1000),
     })
 
-    # Supervisor가 "비분석 질문"으로 판정하면 8개 에이전트가 아무것도 안 돌고
+    # Supervisor가 "비분석 질문"으로 판정하면 뒤 에이전트가 아무것도 안 돌고
     # 여기로 온다. 억지 분석 대신 Supervisor의 안내 메시지를 그대로 반환한다.
     if result.get("supervisor", {}).get("route") == "nonanalytic":
         return {
@@ -259,8 +259,8 @@ def get_data():
 @app.get("/ab-test")
 def get_ab_test():
     """이 커뮤니티의 실제 A/B 테스트(가입 유도 배너) 요약 + 일별 추이 반환.
-    이 쿼리는 tools/bigquery.py의 get_signup_experiment_summary()와 SQL이 거의
-    동일하다 — 저긴 LLM 에이전트용(문자열 반환), 여긴 /ab-test 페이지 차트용
+    이 쿼리는 tools/bigquery.py의 get_experiment_summary(experiment="signup_prompt")와
+    SQL이 거의 동일하다 — 저긴 LLM 에이전트용(문자열 반환), 여긴 /ab-test 페이지 차트용
     (JSON 반환)으로 소비 주체가 달라 별도로 존재한다.
     (2026-07-09) ab_test_mart(무관한 Meta Ads 데모 자료) 대신
     signup_prompt_experiment_mart로 교체 — knowledge/ab_test_framework.md 참고."""
