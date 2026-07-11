@@ -129,6 +129,49 @@ def test_supervisor_survives_llm_failure(monkeypatch):
     assert _route(result) == "complex"
 
 
+# ── 이상 감지 (_detect_anomalies) ────────────────────────────────────
+def _kpi(users_seq):
+    # users_seq[0]=최신일, 나머지=직전일들. sessions/pv는 users에 비례해 채움.
+    return [{"date": f"d{i}", "users": u, "sessions": u, "page_views": u * 3}
+            for i, u in enumerate(users_seq)]
+
+
+def test_anomaly_detected_on_significant_drop():
+    from agent_backend.main import _detect_anomalies
+    rows = _kpi([20] + [100] * 7)  # 100 평균 → 20 (80% 급락), 볼륨 충분
+    found = _detect_anomalies(rows, drop_pct=0.5, min_volume=10)
+    assert any(a["metric"] == "방문자" for a in found)
+
+
+def test_anomaly_held_back_on_small_volume():
+    from agent_backend.main import _detect_anomalies
+    rows = _kpi([1] + [3] * 7)  # 3→1 급락이지만 기준선(3) < min_volume(10) → 보류
+    assert _detect_anomalies(rows, drop_pct=0.5, min_volume=10) == []
+
+
+def test_anomaly_ignores_normal_fluctuation():
+    from agent_backend.main import _detect_anomalies
+    rows = _kpi([95] + [100] * 7)  # 5% 감소는 임계(50%) 미만 → 이상 아님
+    assert _detect_anomalies(rows, drop_pct=0.5, min_volume=10) == []
+
+
+# ── 계측 감시 (_check_instrumentation) ───────────────────────────────
+def test_instrumentation_flags_missing_event():
+    from agent_backend.main import _check_instrumentation
+    # 아무 이벤트도 안 잡힌 상태 → 등록된 기대 이벤트 전부 MISSING
+    report = _check_instrumentation({}, days=14)
+    assert all(r["status"] == "MISSING" for r in report)
+    assert len(report) >= 1
+
+
+def test_instrumentation_ok_when_event_seen():
+    from agent_backend.main import _check_instrumentation, EXPECTED_CUSTOM_EVENTS
+    ev = EXPECTED_CUSTOM_EVENTS[0]["event"]
+    report = _check_instrumentation({ev: (5, "20260710")}, days=14)
+    seen = [r for r in report if r["event"] == ev][0]
+    assert seen["status"] == "OK" and seen["count"] == 5
+
+
 # ── graph.py _trust_gate() ───────────────────────────────────────────
 def test_trust_gate_stops_on_low():
     assert _trust_gate({"analytics_engineer": {"trust_level": "LOW"}}) == "stop"

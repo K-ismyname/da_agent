@@ -275,6 +275,131 @@ def get_ab_test():
     return {"summary": summary, "daily": daily}
 
 
+# 이상 감지는 카운트 지표만 — min_volume 게이트가 "표본이 충분한가"를 카운트로
+# 판단하므로, 비율 지표(engagement_rate 0~1)엔 게이트가 안 맞아 제외한다.
+# 참여율 변화는 급락 알람보다 주간 브리핑에서 해석하는 게 적절.
+ANOMALY_METRICS = [
+    ("users", "방문자"),
+    ("sessions", "세션"),
+    ("page_views", "페이지뷰"),
+]
+
+
+def _detect_anomalies(rows: list[dict], drop_pct: float, min_volume: float) -> list[dict]:
+    """dashboard_kpi 최근 행들(날짜 내림차순, 최신이 rows[0])에서 이상 급락 탐지.
+    최신일 값을 '직전 7일 평균'과 비교 — 전일 단독 비교는 소규모 데이터에서
+    노이즈라 평균으로 완충한다. min_volume 게이트: 기준선(평균)이 이 값 미만이면
+    표본이 너무 작아 이상이라 부를 수 없으므로 건너뛴다(cry wolf 방지)."""
+    if len(rows) < 2:
+        return []
+    latest, baseline_rows = rows[0], rows[1:8]
+    anomalies = []
+    for col, label in ANOMALY_METRICS:
+        base_vals = [r[col] for r in baseline_rows if r.get(col) is not None]
+        if not base_vals:
+            continue
+        avg = sum(base_vals) / len(base_vals)
+        cur = latest.get(col) or 0
+        if avg < min_volume:      # 기준선이 너무 작음 → 이상 판정 보류
+            continue
+        if cur < avg * (1 - drop_pct):
+            anomalies.append({
+                "metric": label, "column": col,
+                "latest": round(cur, 2), "baseline_avg": round(avg, 2),
+                "drop_pct": round((1 - cur / avg) * 100, 1) if avg else None,
+            })
+    return anomalies
+
+
+def _slack_alert(text: str) -> bool:
+    """SLACK_WEBHOOK_URL이 있으면 알림 전송(없으면 조용히 스킵). hooks._hook_slack과
+    같은 방식이지만 이상 감지 전용 — 실패해도 예외를 던지지 않는다."""
+    import urllib.request
+    import json as _json
+    url = os.environ.get("SLACK_WEBHOOK_URL")
+    if not url:
+        return False
+    try:
+        req = urllib.request.Request(
+            url, data=_json.dumps({"text": text}).encode(),
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10)
+        return True
+    except Exception:
+        logger.warning("slack alert 실패", exc_info=True)
+        return False
+
+
+@app.get("/anomaly-check")
+def anomaly_check(drop_pct: float = 0.5, min_volume: float = 10.0):
+    """최신일 지표가 직전 7일 평균 대비 drop_pct 이상 급락했는지 점검하고,
+    이상이 있으면 Slack에 알린다(정기 브리핑과 별개인 '긴급 알림'). LLM 없이
+    SQL+임계값이라 가볍다. 일 단위 cron으로 호출하는 용도.
+    ⚠️ 현재 트래픽(일 1~5명)에선 min_volume 게이트에 막혀 거의 안 울리는 게 정상 —
+    데이터가 충분히 쌓이기 전엔 이상을 함부로 선언하지 않도록 한 의도된 동작."""
+    project = os.environ.get("GCP_PROJECT_ID", "")
+    rows = _query(f"""
+        SELECT date, users, sessions, page_views, engagement_rate
+        FROM `{project}.{DATASET}.dashboard_kpi` ORDER BY date DESC LIMIT 8
+    """)
+    anomalies = _detect_anomalies(rows, drop_pct, min_volume)
+    alerted = False
+    if anomalies:
+        lines = [f":rotating_light: *지표 급락 감지* (직전 7일 평균 대비 {int(drop_pct*100)}%↓)"]
+        for a in anomalies:
+            lines.append(f"- {a['metric']}: {a['baseline_avg']} → {a['latest']} ({a['drop_pct']}%↓)")
+        alerted = _slack_alert("\n".join(lines))
+    return {"checked": len(rows), "anomalies": anomalies, "slack_alerted": alerted}
+
+
+# 배포된 기능이 GA4에 실제로 쏘아야 하는 커스텀 이벤트 레지스트리.
+# 기능을 새로 배포하면 여기 등록 → 계측 공백(배포됐는데 이벤트 미수집)을 감시.
+GA4_DATASET = "analytics_543337410"
+EXPECTED_CUSTOM_EVENTS = [
+    {"event": "recommendation_shown", "feature": "해시태그 관련 글 추천 — 노출"},
+    {"event": "recommendation_click", "feature": "해시태그 관련 글 추천 — 클릭"},
+]
+
+
+def _check_instrumentation(seen: dict, days: int) -> list[dict]:
+    """레지스트리의 각 기대 이벤트가 최근 GA4 데이터에 나타났는지 판정.
+    seen = {event_name: (count, last_date)}. 없으면 MISSING(계측 공백)."""
+    out = []
+    for spec in EXPECTED_CUSTOM_EVENTS:
+        ev = spec["event"]
+        if ev in seen and seen[ev][0] > 0:
+            out.append({**spec, "status": "OK", "count": seen[ev][0], "last_seen": seen[ev][1]})
+        else:
+            out.append({**spec, "status": "MISSING",
+                        "note": f"기능 배포됐으나 최근 {days}일간 이벤트 미수집 — 트래킹 코드/배포 확인 필요"})
+    return out
+
+
+@app.get("/instrumentation-check")
+def instrumentation_check(days: int = 14):
+    """배포된 기능의 커스텀 이벤트가 실제로 GA4에 쌓이는지 감시하고, 누락(MISSING)이
+    있으면 Slack 알림. 기능 배포와 데이터 수집 사이의 공백을 잡는다(Analytics
+    Engineer의 "계측 감사관" 역할을 정기 점검으로 자동화). LLM 없이 SQL만."""
+    project = os.environ.get("GCP_PROJECT_ID", "")
+    names = ", ".join(f"'{s['event']}'" for s in EXPECTED_CUSTOM_EVENTS)
+    rows = _query(f"""
+        SELECT event_name, COUNT(*) AS n, MAX(event_date) AS last_seen
+        FROM `{project}.{GA4_DATASET}.events_*`
+        WHERE event_name IN ({names})
+          AND _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL {int(days)} DAY))
+        GROUP BY event_name
+    """)
+    seen = {r["event_name"]: (r["n"], r["last_seen"]) for r in rows}
+    report = _check_instrumentation(seen, days)
+    missing = [r for r in report if r["status"] == "MISSING"]
+    alerted = False
+    if missing:
+        lines = [":warning: *계측 공백 감지* — 배포됐으나 이벤트가 안 잡히는 기능:"]
+        lines += [f"- {m['feature']} (`{m['event']}`)" for m in missing]
+        alerted = _slack_alert("\n".join(lines))
+    return {"days": days, "report": report, "missing": len(missing), "slack_alerted": alerted}
+
+
 @app.get("/insights")
 def get_insights(days: int = 30):
     """run_log(실행 관측 로그) 집계 — 시스템 자기 관측 대시보드용.
